@@ -1,0 +1,290 @@
+name: Build BARA Demonic Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ARDUINO_CLI_VERSION: "0.32.2"
+  ESP32_URL: "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+  BOARD: "esp32:esp32:esp32"
+  FQBN: "esp32:esp32:esp32"
+  SKETCH: "bara.ino"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+        fetch-depth: 0
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-pip git wget unzip
+        pip3 install platformio
+        pip3 install esptool
+        
+    - name: Install Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        
+    - name: Configure Arduino CLI
+      run: |
+        arduino-cli config init --overwrite
+        arduino-cli config set library.enable_unsafe_install true
+        arduino-cli core update-index --additional-urls ${{ env.ESP32_URL }}
+        
+    - name: Install ESP32 Core
+      run: |
+        arduino-cli core install esp32:esp32@2.0.11 --additional-urls ${{ env.ESP32_URL }}
+        
+    - name: Install Required Libraries
+      run: |
+        arduino-cli lib install "ArduinoJson@6.19.4"
+        arduino-cli lib install "WebServer@1.0.0"
+        arduino-cli lib install "WiFi@1.0"
+        arduino-cli lib install "ESPmDNS@1.0"
+        
+    - name: Verify Installation
+      run: |
+        arduino-cli core list
+        arduino-cli lib list
+        
+    - name: Compile Sketch
+      run: |
+        arduino-cli compile --fqbn ${{ env.FQBN }} --output-dir ./build ${{ env.SKETCH }}
+        
+    - name: Generate Binaries
+      run: |
+        mkdir -p binaries
+        cp ./build/${{ env.SKETCH }}.ino.bin ./binaries/bara_firmware.bin
+        cp ./build/${{ env.SKETCH }}.ino.partitions.bin ./binaries/partitions.bin
+        
+    - name: Generate Flash Script
+      run: |
+        cat > ./binaries/flash.sh << 'EOF'
+        #!/bin/bash
+        echo "=== BARA DEMONIC SUITE FLASH UTILITY ==="
+        echo ""
+        echo "Please select your ESP32 port:"
+        echo ""
+        
+        # عرض المنافذ المتاحة
+        ls /dev/ttyUSB* 2>/dev/null && echo "USB Ports:" && ls /dev/ttyUSB*
+        ls /dev/ttyACM* 2>/dev/null && echo "ACM Ports:" && ls /dev/ttyACM*
+        ls /dev/ttyS* 2>/dev/null && echo "Serial Ports:" && ls /dev/ttyS*
+        echo ""
+        
+        read -p "Enter port (e.g., /dev/ttyUSB0): " PORT
+        
+        if [ ! -e "$PORT" ]; then
+            echo "Error: Port $PORT does not exist!"
+            exit 1
+        fi
+        
+        echo ""
+        echo "Flashing BARA Demonic Suite to $PORT..."
+        echo ""
+        
+        # حرق الملفات
+        esptool.py --chip esp32 --port $PORT --baud 921600 \
+          --before default_reset --after hard_reset write_flash \
+          -z --flash_mode dio --flash_freq 80m --flash_size detect \
+          0x1000 bootloader.bin \
+          0x8000 partitions.bin \
+          0x10000 bara_firmware.bin
+        
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo "=== FLASHING COMPLETE ==="
+            echo "BARA Demonic Suite has been successfully installed!"
+            echo ""
+            echo "Next steps:"
+            echo "1. Connect to WiFi: BARA-DEMONIC-AP"
+            echo "2. Password: A7med@Elshab7"
+            echo "3. Open browser: http://192.168.4.1"
+            echo "4. Or use: http://bara.local"
+            echo ""
+            echo "WARNING: This tool is for authorized testing only!"
+        else
+            echo ""
+            echo "=== FLASHING FAILED ==="
+            echo "Please check your connections and try again."
+        fi
+        EOF
+        
+        chmod +x ./binaries/flash.sh
+        
+    - name: Create PlatformIO Build
+      run: |
+        cat > platformio.ini << 'EOF'
+        [env:esp32dev]
+        platform = espressif32
+        board = esp32dev
+        framework = arduino
+        monitor_speed = 115200
+        upload_speed = 921600
+        
+        lib_deps = 
+            bblanchon/ArduinoJson@^6.19.4
+            WebServer
+            WiFi
+            ESPmDNS
+        
+        build_flags = 
+            -Wno-error=maybe-uninitialized
+            -DBOARD_HAS_PSRAM
+            -mfix-esp32-psram-cache-issue
+        
+        upload_port = /dev/ttyUSB0
+        
+        [env:release]
+        extends = env:esp32dev
+        build_type = release
+        board_build.partitions = default_16MB.csv
+        
+        [env:debug]
+        extends = env:esp32dev
+        build_type = debug
+        EOF
+        
+    - name: Build with PlatformIO
+      run: |
+        pio run -e esp32dev
+        
+    - name: Prepare Release Assets
+      run: |
+        mkdir -p release_assets
+        cp .pio/build/esp32dev/firmware.bin release_assets/
+        cp .pio/build/esp32dev/partitions.bin release_assets/
+        cp binaries/flash.sh release_assets/
+        
+        # إنشاء ملف README
+        cat > release_assets/README.md << 'EOF'
+        # BARA DEMONIC SUITE v2.0.0
+        
+        ## ESP32 Wireless Penetration Testing Tool
+        
+        ### Features:
+        - 📡 Demonic Access Point with powerful interface
+        - 🔍 Advanced WiFi network scanning
+        - ⚡ DEAUTH attack capabilities
+        - 🎨 Bloody hacking theme with visual effects
+        - 🔊 Audio effects for operations
+        - 📊 Real-time signal analysis
+        - 🎮 Interactive web interface
+        
+        ### Installation:
+        
+        #### Method 1: Using Flash Script (Linux/Mac)
+        ```bash
+        chmod +x flash.sh
+        sudo ./flash.sh
+        ```
+        
+        #### Method 2: Manual Flashing
+        ```bash
+        esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \
+          --before default_reset --after hard_reset write_flash \
+          -z --flash_mode dio --flash_freq 80m --flash_size detect \
+          0x1000 bootloader_dio_80m.bin \
+          0x8000 partitions.bin \
+          0x10000 bara_firmware.bin
+        ```
+        
+        #### Method 3: Using PlatformIO
+        ```bash
+        pio run --target upload
+        ```
+        
+        ### Usage:
+        1. Flash the firmware to ESP32
+        2. Connect to WiFi: **BARA-DEMONIC-AP**
+        3. Password: **A7med@Elshab7**
+        4. Open browser: **http://192.168.4.1** or **http://bara.local**
+        5. Start scanning and attacking networks
+        
+        ### Warning:
+        ⚠️ This tool is for **EDUCATIONAL PURPOSES** and **AUTHORIZED PENETRATION TESTING** only!
+        ⚠️ Unauthorized use may be illegal in your country.
+        ⚠️ Use responsibly and ethically.
+        
+        ### Developer:
+        Ahmed Nour Ahmed - From Qena, Egypt
+        
+        ### License:
+        For educational and authorized testing only.
+        EOF
+        
+    - name: Create Archive
+      run: |
+        tar -czf bara_demonic_suite_v2.0.0.tar.gz -C release_assets .
+        zip -r bara_demonic_suite_v2.0.0.zip release_assets/
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: BARA-Binaries
+        path: |
+          binaries/
+          release_assets/
+          bara_demonic_suite_v2.0.0.tar.gz
+          bara_demonic_suite_v2.0.0.zip
+        retention-days: 7
+        
+    - name: Create Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          bara_demonic_suite_v2.0.0.tar.gz
+          bara_demonic_suite_v2.0.0.zip
+        body: |
+          # BARA DEMONIC SUITE v2.0.0
+          
+          ## Ultimate ESP32 Wireless Attack Tool
+          
+          ### 🔥 Features:
+          - Demonic-themed web interface
+          - Advanced WiFi scanning
+          - DEAUTH attack capabilities
+          - Real-time signal analysis
+          - Audio/Visual effects
+          - Multi-client support
+          
+          ### 📦 Included Files:
+          - `bara_firmware.bin` - Main firmware
+          - `partitions.bin` - Partition table
+          - `flash.sh` - Automated flash script
+          
+          ### ⚡ Quick Start:
+          ```bash
+          # Make flash script executable
+          chmod +x flash.sh
+          
+          # Run flash utility
+          sudo ./flash.sh
+          ```
+          
+          ### ⚠️ Disclaimer:
+          FOR EDUCATIONAL AND AUTHORIZED TESTING ONLY!
+          
+          Developed by: **Ahmed Nour Ahmed** - From Qena, Egypt
+        tag_name: v2.0.0
+        name: BARA Demonic Suite v2.0.0
+        draft: false
+        prerelease: false
