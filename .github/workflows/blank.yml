@@ -1,69 +1,20 @@
-name: Build BARA Demonic Suite
+name: Build BARA
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build type'
-        required: true
-        default: 'release'
-        type: choice
-        options:
-        - release
-        - debug
-
-env:
-  ARDUINO_CLI_VERSION: "0.35.0"
-  ESP32_CORE_VERSION: "2.0.14"
-  BOARD: "esp32:esp32:esp32"
-  FQBN: "esp32:esp32:esp32"
-  SKETCH: "bara.ino"
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      arduino_path: ${{ steps.setup-arduino.outputs.arduino-path }}
-    
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Arduino CLI
-      id: setup-arduino
-      run: |
-        echo "Setting up Arduino CLI..."
-        
-        # تنزيل Arduino CLI
-        ARDUINO_CLI_URL="https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz"
-        wget -q $ARDUINO_CLI_URL -O arduino-cli.tar.gz
-        
-        # استخراج
-        tar -xzf arduino-cli.tar.gz
-        chmod +x arduino-cli
-        
-        # إضافة إلى PATH
-        echo "$(pwd)" >> $GITHUB_PATH
-        echo "arduino-path=$(pwd)" >> $GITHUB_OUTPUT
-        
-        # التحقق من التثبيت
-        ./arduino-cli version
-
   build:
     runs-on: ubuntu-latest
-    needs: setup
-    env:
-      ARDUINO_CLI_PATH: ${{ needs.setup.outputs.arduino_path }}
     
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Python
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
@@ -72,660 +23,84 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          python3-pip \
-          git \
           wget \
           unzip \
-          curl \
-          libusb-1.0-0 \
-          libudev-dev
-          
-    - name: Install ESP Tool
+          git \
+          python3-pip
+        
+    - name: Install Arduino CLI
       run: |
-        pip3 install esptool
-        esptool.py version
+        # طريقة مباشرة - تحميل ثنائي Arduino CLI
+        wget -q https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz
+        tar -xzf arduino-cli_latest_Linux_64bit.tar.gz
+        sudo mv arduino-cli /usr/local/bin/
+        arduino-cli version
         
-    - name: Download Arduino CLI
-      id: download-cli
+    - name: Setup Arduino
       run: |
-        echo "Downloading Arduino CLI version ${{ env.ARDUINO_CLI_VERSION }}..."
+        # التهيئة
+        arduino-cli config init
+        arduino-cli config set library.enable_unsafe_install true
         
-        # تنزيل النسخة المحددة
-        ARDUINO_CLI_URL="https://github.com/arduino/arduino-cli/releases/download/${{ env.ARDUINO_CLI_VERSION }}/arduino-cli_${{ env.ARDUINO_CLI_VERSION }}_Linux_64bit.tar.gz"
-        echo "Download URL: $ARDUINO_CLI_URL"
+        # إضافة ESP32
+        arduino-cli config add board_manager.additional_urls \
+          https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
         
-        wget -q $ARDUINO_CLI_URL -O arduino-cli.tar.gz
-        tar -xzf arduino-cli.tar.gz
-        chmod +x arduino-cli
+        arduino-cli core update-index
+        arduino-cli core install esp32:esp32
         
-        # إنشاء مجلد للتهيئة
-        mkdir -p ~/.arduino15
-        
-        # اختبار الأمر
-        ./arduino-cli version
-        
-    - name: Configure Arduino CLI
+    - name: Install Libraries
       run: |
-        echo "Configuring Arduino CLI..."
-        ./arduino-cli config init --overwrite
-        ./arduino-cli config set library.enable_unsafe_install true
-        ./arduino-cli config set directories.user $(pwd)/arduino_user
+        arduino-cli lib install "ArduinoJson"
+        arduino-cli lib install "WiFi"
+        arduino-cli lib install "WebServer"
         
-        # إضافة index ESP32
-        ./arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-        ./arduino-cli core update-index
-        
-    - name: Install ESP32 Core
+    - name: Verify Setup
       run: |
-        echo "Installing ESP32 core..."
-        ./arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }}
+        arduino-cli core list
+        arduino-cli lib list
         
-    - name: Verify Installation
+    - name: Compile
       run: |
-        echo "Verifying installations..."
-        ./arduino-cli core list
-        ./arduino-cli board listall
+        # البحث عن ملف INO
+        INO_FILE=$(find . -name "*.ino" | head -1)
+        echo "Compiling: $INO_FILE"
         
-    - name: Install Required Libraries
-      run: |
-        echo "Installing libraries..."
-        
-        # تثبيت المكتبات الضرورية
-        ./arduino-cli lib install "ArduinoJson@6.21.3"
-        ./arduino-cli lib install "WiFi"
-        ./arduino-cli lib install "WebServer"
-        ./arduino-cli lib install "ESPmDNS"
-        
-        echo "Installed libraries:"
-        ./arduino-cli lib list
-        
-    - name: Compile Sketch
-      run: |
-        echo "Compiling sketch..."
-        
-        # إنشاء مجلد للبناء
-        mkdir -p build
-        
-        # التحقق من وجود الملف
-        echo "Sketch file: ${{ env.SKETCH }}"
-        ls -la *.ino || echo "No INO files found"
-        
-        # استخدام find للبحث عن الملفات
-        if [ -f "${{ env.SKETCH }}" ]; then
-          echo "Sketch found at: ${{ env.SKETCH }}"
-        else
-          # البحث عن ملف INO في المجلد الحالي
-          SKETCH_FILE=$(find . -name "*.ino" | head -1)
-          if [ -n "$SKETCH_FILE" ]; then
-            echo "Found sketch: $SKETCH_FILE"
-            SKETCH_NAME=$(basename "$SKETCH_FILE")
-            echo "SKETCH=$SKETCH_NAME" >> $GITHUB_ENV
-          else
-            echo "ERROR: No INO file found!"
-            exit 1
-          fi
-        fi
-        
-        # التجميع
-        ./arduino-cli compile \
-          --fqbn ${{ env.FQBN }} \
+        arduino-cli compile \
+          --fqbn esp32:esp32:esp32 \
           --build-path ./build \
-          --build-cache-path ./build/cache \
-          --warnings all \
-          --verbose \
-          ${{ env.SKETCH }}
-          
-        echo "Compilation completed!"
+          $INO_FILE
         
-    - name: Generate Binaries
+    - name: Prepare Output
       run: |
-        echo "Generating binaries..."
-        
-        # إنشاء مجلد للمخرجات
-        mkdir -p binaries
+        mkdir -p output
         
         # نسخ الملفات المهمة
-        if [ -f "build/${{ env.SKETCH }}.ino.bin" ]; then
-          cp build/${{ env.SKETCH }}.ino.bin binaries/bara_firmware.bin
-          echo "✅ Firmware binary created"
-        fi
+        INO_FILE=$(find . -name "*.ino" | head -1)
+        BASENAME=$(basename "$INO_FILE" .ino)
         
-        if [ -f "build/${{ env.SKETCH }}.ino.partitions.bin" ]; then
-          cp build/${{ env.SKETCH }}.ino.partitions.bin binaries/partitions.bin
-          echo "✅ Partitions binary created"
-        fi
+        cp "build/$BASENAME.ino.bin" output/firmware.bin
+        cp "build/$BASENAME.ino.partitions.bin" output/partitions.bin
         
-        # البحث عن bootloader
-        BOOTLOADER_PATH=$(find ~/.arduino15 -name "bootloader_dio_80m.bin" | head -1)
-        if [ -n "$BOOTLOADER_PATH" ]; then
-          cp "$BOOTLOADER_PATH" binaries/bootloader.bin
-          echo "✅ Bootloader copied from: $BOOTLOADER_PATH"
-        else
-          # تنزيل bootloader بديل
-          echo "⚠️ Bootloader not found, downloading..."
-          wget -q https://github.com/espressif/arduino-esp32/raw/master/tools/sdk/esp32/bin/bootloader_dio_80m.bin \
-            -O binaries/bootloader.bin
-        fi
+        # إنشاء ملف بسيط للتعليمات
+        cat > output/README.txt << EOF
+        BARA Demonic Suite
+        ==================
         
-    - name: Create Flash Script
-      run: |
-        echo "Creating flash script..."
+        Files:
+        - firmware.bin: Main firmware (flash at 0x10000)
+        - partitions.bin: Partition table (flash at 0x8000)
         
-        cat > binaries/flash.sh << 'EOF'
-#!/bin/bash
-
-# ============================================
-# BARA DEMONIC SUITE - Flash Utility
-# ============================================
-
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-print_header() {
-    echo -e "${BLUE}"
-    echo "==========================================="
-    echo "    BARA DEMONIC SUITE - Flash Tool"
-    echo "==========================================="
-    echo -e "${NC}"
-}
-
-print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-print_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
-}
-
-# التحقق من esptool
-check_esptool() {
-    if ! command -v esptool.py &> /dev/null; then
-        print_error "esptool.py not found!"
-        echo "Installing esptool..."
-        pip3 install esptool
-    fi
-}
-
-# العثور على منفذ ESP32
-find_esp_port() {
-    local ports=()
-    
-    # البحث في المنافذ الشائعة
-    for pattern in /dev/ttyUSB* /dev/ttyACM* /dev/ttyS* /dev/cu.*; do
-        for port in $pattern; do
-            if [ -e "$port" ]; then
-                ports+=("$port")
-            fi
-        done
-    done
-    
-    if [ ${#ports[@]} -eq 0 ]; then
-        print_error "No serial ports found!"
-        echo ""
-        echo "Please:"
-        echo "1. Connect ESP32 via USB"
-        echo "2. Install CH340/CP210x drivers if needed"
-        echo "3. Check if device is detected:"
-        echo "   ls -la /dev/tty*"
-        exit 1
-    fi
-    
-    echo ""
-    print_info "Available ports:"
-    for i in "${!ports[@]}"; do
-        echo "  $((i+1)). ${ports[$i]}"
-    done
-    
-    echo ""
-    read -p "Select port number (1-${#ports[@]}): " port_num
-    
-    if ! [[ "$port_num" =~ ^[0-9]+$ ]] || [ "$port_num" -lt 1 ] || [ "$port_num" -gt ${#ports[@]} ]; then
-        print_error "Invalid selection!"
-        exit 1
-    fi
-    
-    SELECTED_PORT="${ports[$((port_num-1))]}"
-    print_info "Selected port: $SELECTED_PORT"
-}
-
-# الحصول على معلومات ESP32
-get_esp_info() {
-    print_info "Getting ESP32 info..."
-    if esptool.py --port "$SELECTED_PORT" chip_id; then
-        print_success "ESP32 detected!"
-    else
-        print_error "Cannot communicate with ESP32!"
-        echo ""
-        echo "Troubleshooting:"
-        echo "1. Press BOOT button while connecting"
-        echo "2. Try different USB cable"
-        echo "3. Check driver installation"
-        exit 1
-    fi
-}
-
-# حرق البرنامج الثابت
-flash_firmware() {
-    print_info "Starting flash process..."
-    
-    local flash_cmd="esptool.py --chip esp32 --port \"$SELECTED_PORT\" --baud 921600 \
-      --before default_reset --after hard_reset write_flash \
-      -z --flash_mode dio --flash_freq 80m --flash_size detect"
-    
-    echo ""
-    print_warning "⚠️  WARNING: This will erase existing firmware!"
-    read -p "Continue? (y/N): " confirm
-    
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        print_info "Flash cancelled"
-        exit 0
-    fi
-    
-    echo ""
-    print_info "Flashing bootloader..."
-    $flash_cmd 0x1000 bootloader.bin
-    
-    echo ""
-    print_info "Flashing partitions..."
-    $flash_cmd 0x8000 partitions.bin
-    
-    echo ""
-    print_info "Flashing firmware..."
-    $flash_cmd 0x10000 bara_firmware.bin
-    
-    echo ""
-    print_success "Flashing completed successfully!"
-}
-
-# الدالة الرئيسية
-main() {
-    print_header
-    
-    check_esptool
-    find_esp_port
-    get_esp_info
-    flash_firmware
-    
-    echo ""
-    echo "==========================================="
-    print_success "BARA DEMONIC SUITE INSTALLATION COMPLETE!"
-    echo "==========================================="
-    echo ""
-    echo "NEXT STEPS:"
-    echo "1. Disconnect and reconnect ESP32"
-    echo "2. Look for WiFi: ${GREEN}BARA-DEMONIC-AP${NC}"
-    echo "3. Password: ${YELLOW}A7med@Elshab7${NC}"
-    echo "4. Open browser: ${BLUE}http://192.168.4.1${NC}"
-    echo ""
-    print_warning "⚠️  FOR AUTHORIZED TESTING ONLY!"
-    echo ""
-}
-
-# تشغيل الدالة الرئيسية
-main "$@"
-EOF
-        
-        chmod +x binaries/flash.sh
-        print_success "Flash script created"
-        
-    - name: Create PlatformIO Config
-      run: |
-        echo "Creating PlatformIO configuration..."
-        
-        cat > platformio.ini << 'EOF'
-        ; PlatformIO Project Configuration File
-        ;
-        ;   Build options: build flags, source filter
-        ;   Upload options: custom upload port, speed and extra flags
-        ;   Library options: dependencies, extra library directories
-        ;   Advanced options: extra scripting
-        ;
-        ; Please visit documentation for the other options and examples
-        ; https://docs.platformio.org/page/projectconf.html
-
-        [env:esp32dev]
-        platform = espressif32
-        board = esp32dev
-        framework = arduino
-        monitor_speed = 115200
-        upload_speed = 921600
-        
-        ; مكتبات النظام
-        lib_deps = 
-            bblanchon/ArduinoJson@^6.21.3
-            WebServer
-            WiFi
-            ESPmDNS
-        
-        ; إعدادات البناء
-        build_flags = 
-            -Wno-error=maybe-uninitialized
-            -DBOARD_HAS_PSRAM
-            -mfix-esp32-psram-cache-issue
-            -DCORE_DEBUG_LEVEL=1
-        
-        ; إعدادات التحميل
-        upload_port = /dev/ttyUSB0
-        upload_protocol = esptool
-        
-        [env:release]
-        extends = env:esp32dev
-        build_type = release
-        board_build.partitions = default_16MB.csv
-        build_flags = ${env:esp32dev.build_flags}
-        
-        [env:debug]
-        extends = env:esp32dev
-        build_type = debug
-        board_build.partitions = huge_app.csv
-        build_flags = 
-            ${env:esp32dev.build_flags}
-            -DDEBUG_ESP_WIFI
-            -DDEBUG_ESP_HTTP_SERVER
-        
-        [env:custom]
-        extends = env:esp32dev
-        board_build.partitions = default_16MB.csv
-        build_flags = 
-            ${env:esp32dev.build_flags}
-            -DCUSTOM_SETTINGS
-            -DWEB_DEBUG
-        
-        ; إعدادات المطور
-        [platformio]
-        description = BARA Demonic Suite - ESP32 Wireless Tool
-        src_dir = .
-        lib_dir = lib
-        include_dir = include
-        data_dir = data
-        test_dir = test
-        boards_dir = boards
-        default_envs = esp32dev
-        extra_configs = 
-            extra/debug.ini
-            extra/release.ini
-        
-        ; إعدادات المراقبة
-        [monitor]
-        port = /dev/ttyUSB0
-        baud = 115200
-        filters = 
-            colorize
-            esp32_exception_decoder
-            time
-        
-        ; إعدادات LDF
-        [env:ldf]
-        lib_ldf_mode = chain+
-        lib_compat_mode = strict
-        
-        ; إعدادات الاختبار
-        [env:test]
-        extends = env:esp32dev
-        build_type = debug
-        test_framework = unity
-        test_port = /dev/ttyUSB0
-        test_speed = 115200
-        
-        ; إعدادات OTA
-        [env:ota]
-        extends = env:esp32dev
-        upload_protocol = espota
-        upload_port = 192.168.1.100
-        upload_flags = 
-            --auth=admin123
-            --port=3232
-        
-        ; إعدادات CI
-        [ci]
-        platform = espressif32
-        board = esp32dev
-        framework = arduino
-        
-        ; إعدادات التوثيق
-        [docs]
-        platform = espressif32
-        framework = arduino
-        board = esp32dev
-        
-        ; إعدادات التطوير
-        [dev]
-        platform = espressif32
-        framework = arduino
-        board = esp32dev
-        monitor_speed = 115200
-        upload_speed = 921600
-        lib_deps = ${env:esp32dev.lib_deps}
-        build_flags = ${env:esp32dev.build_flags}
+        Flash using esptool:
+        esptool.py --chip esp32 --port /dev/ttyUSB0 \\
+          --baud 921600 write_flash \\
+          0x1000 bootloader_dio_80m.bin \\
+          0x8000 partitions.bin \\
+          0x10000 firmware.bin
         EOF
-        
-    - name: Create GitHub Actions Artifacts
-      run: |
-        echo "Creating artifacts..."
-        
-        # إنشاء ملف README للمخرجات
-        cat > binaries/README.md << 'EOF'
-        # BARA Demonic Suite - Binaries
-        
-        ## Firmware Files
-        
-        ### Required for Flashing:
-        1. **bootloader.bin** - Bootloader file (address: 0x1000)
-        2. **partitions.bin** - Partition table (address: 0x8000)
-        3. **bara_firmware.bin** - Main firmware (address: 0x10000)
-        
-        ### Optional Files:
-        - **flash.sh** - Automatic flash script (Linux/Mac)
-        - **platformio.ini** - PlatformIO configuration
-        
-        ## Quick Flash Guide
-        
-        ### Method 1: Using flash.sh (Linux/Mac)
-        ```bash
-        # Make executable
-        chmod +x flash.sh
-        
-        # Run with sudo
-        sudo ./flash.sh
-        
-        # Or specify port directly
-        sudo ./flash.sh /dev/ttyUSB0
-        ```
-        
-        ### Method 2: Manual Flashing with esptool
-        ```bash
-        # Erase flash
-        esptool.py --chip esp32 --port /dev/ttyUSB0 erase_flash
-        
-        # Flash all files
-        esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \
-          --before default_reset --after hard_reset write_flash \
-          -z --flash_mode dio --flash_freq 80m --flash_size detect \
-          0x1000 bootloader.bin \
-          0x8000 partitions.bin \
-          0x10000 bara_firmware.bin
-        ```
-        
-        ### Method 3: Using PlatformIO
-        ```bash
-        # Install PlatformIO
-        pip install platformio
-        
-        # Build and upload
-        pio run --target upload
-        
-        # Monitor serial
-        pio device monitor
-        ```
-        
-        ## Post-Flash Instructions
-        
-        1. **Reset ESP32** (press EN button or power cycle)
-        2. **Connect to WiFi**: `BARA-DEMONIC-AP`
-        3. **Password**: `A7med@Elshab7`
-        4. **Open browser**: `http://192.168.4.1`
-        5. **Alternative**: `http://bara.local` (mDNS)
-        
-        ## Troubleshooting
-        
-        ### ESP32 Not Detected:
-        ```bash
-        # Check USB connection
-        ls -la /dev/tty*
-        
-        # Install drivers
-        sudo apt-get install brltty
-        sudo usermod -a -G dialout $USER
-        
-        # Re-login or reboot
-        ```
-        
-        ### Flashing Errors:
-        - Hold BOOT button during flash
-        - Try different USB cable
-        - Lower baud rate to 460800
-        - Check power supply
-        
-        ### Web Interface Not Accessible:
-        - Verify WiFi connection
-        - Check IP address
-        - Clear browser cache
-        - Try different browser
-        
-        ## Legal Notice
-        
-        ⚠️ **FOR EDUCATIONAL AND AUTHORIZED TESTING ONLY!**
-        
-        Developed by: **Ahmed Nour Ahmed** - From Qena, Egypt
-        EOF
-        
-        # إنشاء ملف معلومات البناء
-        echo "Creating build info..."
-        cat > binaries/build_info.json << EOF
-        {
-          "project": "BARA Demonic Suite",
-          "version": "2.0.0",
-          "build_date": "$(date -u +'%Y-%m-%d %H:%M:%S UTC')",
-          "board": "esp32",
-          "framework": "arduino",
-          "arduino_cli_version": "${{ env.ARDUINO_CLI_VERSION }}",
-          "esp32_core_version": "${{ env.ESP32_CORE_VERSION }}",
-          "developer": "Ahmed Nour Ahmed",
-          "location": "Qena, Egypt",
-          "warning": "FOR AUTHORIZED TESTING ONLY"
-        }
-        EOF
-        
-    - name: Create Archive
-      run: |
-        echo "Creating distribution archives..."
-        
-        # إنشاء أرشيف tar
-        tar -czf bara_demonic_suite_linux.tar.gz \
-          binaries/bootloader.bin \
-          binaries/partitions.bin \
-          binaries/bara_firmware.bin \
-          binaries/flash.sh \
-          binaries/README.md \
-          binaries/build_info.json \
-          platformio.ini
-        
-        # إنشاء أرشيف zip
-        zip -r bara_demonic_suite_windows.zip \
-          binaries/bootloader.bin \
-          binaries/partitions.bin \
-          binaries/bara_firmware.bin \
-          binaries/README.md \
-          binaries/build_info.json \
-          platformio.ini
-        
-        # إنشاء أرشيف كامل
-        mkdir -p dist
-        cp bara_demonic_suite_linux.tar.gz dist/
-        cp bara_demonic_suite_windows.zip dist/
-        
-        ls -la dist/
         
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: BARA-Binaries-v2.0.0
-        path: |
-          binaries/
-          dist/
-          platformio.ini
-          build/
-        retention-days: 30
-        
-    - name: Create Release
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: |
-          dist/bara_demonic_suite_linux.tar.gz
-          dist/bara_demonic_suite_windows.zip
-          binaries/build_info.json
-        tag_name: v2.0.0
-        name: BARA Demonic Suite v2.0.0
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-        body: |
-          # 🗡️ BARA DEMONIC SUITE v2.0.0
-          
-          ## Ultimate ESP32 Wireless Penetration Testing Tool
-          
-          ### 🎯 What's New
-          - ✅ Fixed Arduino CLI installation in GitHub Actions
-          - 🎨 Enhanced demonic interface with blood effects
-          - ⚡ Improved performance and stability
-          - 🐛 Fixed various bugs and issues
-          
-          ### 📦 Included Files
-          - `bara_firmware.bin` - Main firmware (0x10000)
-          - `partitions.bin` - Partition table (0x8000)
-          - `bootloader.bin` - Bootloader (0x1000)
-          - `flash.sh` - Automated flash script (Linux/Mac)
-          - `platformio.ini` - PlatformIO configuration
-          
-          ### ⚡ Quick Start
-          #### Linux/Mac:
-          ```bash
-          # Extract and flash
-          tar -xzf bara_demonic_suite_linux.tar.gz
-          cd binaries
-          chmod +x flash.sh
-          sudo ./flash.sh
-          ```
-          
-          #### Windows:
-          1. Use ESP32 Flash Download Tool
-          2. Load the three .bin files at their offsets
-          3. Flash with DIO mode, 80MHz
-          
-          ### 🛠️ Build Info
-          - **Arduino CLI**: ${{ env.ARDUINO_CLI_VERSION }}
-          - **ESP32 Core**: ${{ env.ESP32_CORE_VERSION }}
-          - **Board**: ESP32 Dev Module
-          - **Framework**: Arduino
-          
-          ### ⚠️ Legal Notice
-          **FOR EDUCATIONAL AND AUTHORIZED TESTING ONLY!**
-          
-          ### 👨‍💻 Developer
-          **Ahmed Nour Ahmed** - From Qena, Egypt
+        name: firmware
+        path: output/
